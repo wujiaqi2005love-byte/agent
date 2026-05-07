@@ -1,35 +1,53 @@
 import streamlit as st
 import requests
 import json
+import os
 from datetime import datetime, timedelta
+import pandas as pd
+import PyPDF2
+from PIL import Image
+import pytesseract
 
 # ======================
-# 你的 DeepSeek API Key
+# 配置
 # ======================
 API_KEY = "sk-00bd4a739b734079adf795a752d65a4d"
 DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
+# 知识库文件夹路径
+KNOWLEDGE_DIR = os.path.join(os.getcwd(), "knowledge")
 
 # ======================
-# 企业业务知识库
+# 企业完整信息
 # ======================
-COMPANY_BUSINESS = """
-我们公司是名诚印务制本有限公司，专业做印务制本一站式服务，主营：
+COMPANY_INFO = """
+公司名称：绍兴市名诚印务制本有限公司
+地址：浙江省绍兴市越城区镜湖路
+成立时间：2003年08月18日
+注册资本：150.00万人民币
+经营范围：
+1. 包装装潢、其他印刷品印刷
+2. 本册加工
+3. 批发、零售：纸制品、塑料制品、工艺礼品（除金饰品）、邮品（除普通邮票）、布
+
+主营产品：
 1. 各类画册、宣传册、企业样本册、产品手册、楼书
 2. 精装书、平装书刊、笔记本、记事本、定制本册
 3. 包装盒、礼品盒、手提袋、档案盒、封套
 4. 宣传单页、折页、海报、不干胶标签、贴纸
 5. 教材教辅、会议资料、培训手册、杂志书刊
-支持设计排版、印刷、装订、送货一站式服务。
+
+服务：设计排版、印刷、装订、送货一站式服务。
+订购联系电话：13605755944（吴先生）
 """
 
 # ======================
-# 报价 + 工期计算工具
+# 报价 + 工期计算
 # ======================
 def calculate_price_and_time(product_type, size, quantity, page_num, paper_type, has_complex_craft):
     base_unit_price = 0.6
     if "精装" in product_type:
         base_unit_price = 1.8
-    elif "画册" in product_type:
+    elif "画册" in product_type or "宣传册" in product_type:
         base_unit_price = 0.8
     elif "笔记本" in product_type:
         base_unit_price = 0.7
@@ -53,23 +71,61 @@ def calculate_price_and_time(product_type, size, quantity, page_num, paper_type,
 
     deliver_date = (datetime.now() + timedelta(days=work_days)).strftime("%Y-%m-%d")
 
-    return (
-        f"📋 印刷定制报价 & 交期预估\n"
-        f"产品类型：{product_type}\n"
-        f"成品尺寸：{size}\n"
-        f"定制数量：{quantity}本\n"
-        f"内页页数：{page_num}P\n"
-        f"用纸材质：{paper_type}\n"
-        f"特殊工艺：{'有' if has_complex_craft else '无'}\n"
-        f"——————————————\n"
-        f"预估单价：{unit_price} 元/本\n"
-        f"预估总价：{total_price} 元左右\n"
-        f"生产工期：约 {work_days} 个工作日\n"
-        f"预计交付：{deliver_date}"
-    )
+    return f"""
+📋 印刷定制报价 & 交期预估
+产品类型：{product_type}
+成品尺寸：{size}
+定制数量：{quantity}本
+内页页数：{page_num}P
+用纸材质：{paper_type}
+特殊工艺：{'有' if has_complex_craft else '无'}
+——————————————
+预估单价：{unit_price} 元/本
+预估总价：{total_price} 元左右
+生产工期：约 {work_days} 个工作日
+预计交付：{deliver_date}
+"""
 
 # ======================
-# DeepSeek 调用函数
+# 单文件文本提取
+# ======================
+def extract_text_from_file(file_path):
+    text = ""
+    try:
+        if file_path.lower().endswith(".pdf"):
+            reader = PyPDF2.PdfReader(file_path)
+            for page in reader.pages:
+                text += page.extract_text() + "\n"
+        elif file_path.lower().endswith((".xlsx", ".xls")):
+            df = pd.read_excel(file_path)
+            text = df.to_string()
+        elif file_path.lower().endswith((".png", ".jpg", ".jpeg")):
+            img = Image.open(file_path)
+            text = pytesseract.image_to_string(img, lang="chi_sim")
+        elif file_path.lower().endswith(".txt"):
+            with open(file_path, "r", encoding="utf-8") as f:
+                text = f.read()
+    except Exception as e:
+        text = f"文件解析失败：{str(e)}"
+    return text.strip()
+
+# ======================
+# 批量加载整个知识库文件夹
+# ======================
+def load_all_knowledge():
+    all_text = "【公司内部知识库资料】\n"
+    if not os.path.exists(KNOWLEDGE_DIR):
+        os.makedirs(KNOWLEDGE_DIR)
+        return all_text
+    for fname in os.listdir(KNOWLEDGE_DIR):
+        fpath = os.path.join(KNOWLEDGE_DIR, fname)
+        if os.path.isfile(fpath):
+            all_text += f"\n===== 文件：{fname} =====\n"
+            all_text += extract_text_from_file(fpath)
+    return all_text
+
+# ======================
+# DeepSeek 对话
 # ======================
 def deepseek_chat(messages):
     headers = {
@@ -86,60 +142,55 @@ def deepseek_chat(messages):
     return res["choices"][0]["message"]["content"]
 
 # ======================
-# 系统提示词
+# 加载全局知识库
+# ======================
+knowledge_content = load_all_knowledge()
+
+# ======================
+# 系统提示词（内置知识库+公司信息）
 # ======================
 SYSTEM_PROMPT = f"""
-你是一家专业印务制本公司的智能客服。
-你的任务：
-1. 客户问业务 → 介绍：{COMPANY_BUSINESS}
-2. 客户问报价/交期 → 必须收集6项信息：
-   - 产品类型、尺寸、数量、页数、纸张、是否有复杂工艺
-3. 信息不全 → 礼貌追问
-4. 信息齐全 → 直接输出报价结果
-语气不专业、暴躁、简短。
+你是绍兴市名诚印务制本有限公司的专业智能客服。
+联系电话：13605755944（对外只称呼吴先生，不透露全名）
+
+【公司基础信息】
+{COMPANY_INFO}
+
+【内部知识库资料】
+{knowledge_content}
+
+严格遵守规则：
+1. 回答客户问题优先参考公司信息 + 内部知识库
+2. 客户问报价、价格、工期：必须收集6项信息：产品类型、成品尺寸、定制数量、内页页数、纸张类型、是否有复杂工艺
+3. 信息不全礼貌追问，信息齐全自动给出标准报价单
+4. 禁止编造不存在的价格、业务信息
+5. 语气专业、简洁、接地气，适合印刷行业客服口吻
 """
 
 # ======================
-# 网页界面
+# 前台聊天界面（无任何文件上传）
 # ======================
-st.set_page_config(page_title="印务制本智能客服", layout="wide")
-st.title("📖 印务制本企业 - 智能客服 AI Agent")
+st.set_page_config(page_title="名诚印务智能客服", layout="wide")
+st.title("📖 绍兴市名诚印务制本有限公司 - AI智能客服")
 
+# 初始化对话
 if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "system", "content": SYSTEM_PROMPT}
-    ]
+    st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
+# 展示历史对话
 for msg in st.session_state.messages:
     if msg["role"] != "system":
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-user_input = st.chat_input("请输入您的问题...")
+# 用户聊天输入
+user_input = st.chat_input("请输入您的咨询问题...")
 if user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # AI 回复
-    reply = deepseek_chat(st.session_state.messages)
-
-    # 自动判断是否需要计算报价
-    if "产品类型" in reply and "数量" in reply and "页数" in reply:
-        try:
-            # 这里简化：如果AI回复里包含参数，自动触发报价计算
-            # 实际可通过函数调用增强
-            reply = calculate_price_and_time(
-                product_type="画册",
-                size="A4",
-                quantity=500,
-                page_num=40,
-                paper_type="铜版纸",
-                has_complex_craft=False
-            )
-        except:
-            pass
-
-    st.session_state.messages.append({"role": "assistant", "content": reply})
+    ai_reply = deepseek_chat(st.session_state.messages)
+    st.session_state.messages.append({"role": "assistant", "content": ai_reply})
     with st.chat_message("assistant"):
-        st.markdown(reply)
+        st.markdown(ai_reply)
